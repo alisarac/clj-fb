@@ -5,14 +5,17 @@ Clojure library to help backend development for facebook applications.
 Current properties 
 - uninstalled user listener
 - realtime updates listener
+- basic facebook graph api
 
 ## Usage
 
-In current phase it is not usable. Needs refactoring, too much dependencies, codes for testing purposes should be removed. Please do not use yet.
+In current phase it is not very usable. Needs refactoring, too much dependencies, codes for testing purposes should be removed. Please do not use yet.
 
 ## TODO
 
-Adding facebook graph api to get details of realtime updates.
+A more flexible facebook graph api to get details of realtime updates.
+Hide implementation details
+
 
 ## License
 

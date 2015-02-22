@@ -2,7 +2,9 @@
   (:require [compojure.core :refer :all]
             [environ.core :refer [env]]
             [ring.util.response :as r]
-            [cheshire.core :as json])
+            [cheshire.core :as json]
+            [clj-fb.graph-api :as api]
+            [clojure.string :as s])
   (:import (org.apache.commons.codec.binary Base64)
            (javax.crypto Mac)
            (javax.crypto.spec SecretKeySpec)))
@@ -26,38 +28,79 @@
     (let [response (handler request)]
       (r/header response "Content-Type" "text/plain; charset=utf-8"))))
 
-(defn secretKeyInst [key mac]
+
+;; Implementation detail about verifying signed request
+(defn secret-key-inst [key mac]
   (SecretKeySpec. (.getBytes key) (.getAlgorithm mac)))
 
 (defn sign 
   "Returns the signature of a string with a given key, using a SHA-256 HMAC."
   [key string]
   (let [mac (Mac/getInstance "HMACSHA256")
-        secretKey (secretKeyInst key mac)]
+        secret-key (secret-key-inst key mac)]
     (-> (doto mac
-          (.init secretKey)
+          (.init secret-key)
           (.update (.getBytes string)))
         .doFinal)))
 
-(defn toHexString 
+(defn bytes->hex-string 
   "Convert bytes to a String"
   [bytes]
   (apply str (map #(format "%x" %) bytes)))
 
-(defn parse-signed-request [signed-req]
-  (let [signed-req (clojure.string/replace signed-req #"-" "+")
-        signed-req (clojure.string/replace signed-req #"_" "/")
-        [encoded-sig payload] (clojure.string/split signed-req #"\.")
+(defn parse-signed-request 
+  "Verifies and parses signed request from facebook. 
+  If not signed request is not verified returns nil."
+  [signed-req]
+  (let [signed-req (s/replace signed-req #"-" "+")
+        signed-req (s/replace signed-req #"_" "/")
+        [encoded-sig payload] (s/split signed-req #"\.")
         base64 (Base64. true)
         sig (.decode base64 (.getBytes encoded-sig "UTF-8"))
         signed-payload (sign secret payload)]
-    (when (= (toHexString sig) (toHexString signed-payload))
+    (when (= (bytes->hex-string sig) (bytes->hex-string signed-payload))
       (json/parse-string (String. (.decode base64 (.getBytes payload "UTF-8")))))))
 
-(defn update-handler
-  "Placeholder for update data"
-  [entry] 
-  entry)
+(defn process-payment [{:keys [params status headers body error]}]
+  (let [body (json/parse-string body)
+        payment-id (body "id")
+        request-id (body "request_id")
+        user-id (get-in body ["user" "id"])
+        application-id (get-in body ["application" "id"])
+        application-namespace (get-in body ["application" "namespace"])
+        application-name (get-in body ["application" "name"])
+        actions (body "actions")
+        refundable-amount (body "refundable_amount")
+        items (body "items")
+        test? (body "test")
+        exchange-rate (body "payout_foreign_exchange_rate")
+        completed? (some #(= "completed" (% "status")) actions)]
+    {:body body
+     :payment-id payment-id
+     :request-id request-id
+     :user-id user-id
+     :application-id application-id
+     :application-namespace application-namespace
+     :application-name application-name
+     :actions actions
+     :refundable-amount refundable-amount
+     :items items
+     :test? test?
+     :exchange-rate exchange-rate
+     :completed? completed?})) ; TODO make it modular so users can do whatever they needed 
+
+(defn process-user [{:keys [params status headers body error]}]
+  (let [body (json/parse-string body)]
+    {:body body})) ; TODO make it modular so users can do whatever they needed 
+
+(defn process-permissions [{:keys [params status headers body error]}]
+  (let [body (json/parse-string body)]
+    {:body body})) ; TODO make it modular so users can do whatever they needed 
+
+(defn entry-handler
+  "Gets details of update from id of entry"
+  [entry f] 
+  (api/get-graph-info (:id entry) f))
 
 
 (defn realtime-updates-handler [{:keys [params body error]}]
@@ -65,21 +108,20 @@
         entries (:entry params)]
     (condp = object
       "payments" (doseq [entry entries]
-                   (update-handler entry))
+                   (entry-handler entry process-payment))
       "user" (doseq [entry entries]
-               (update-handler entry))
+               (entry-handler entry process-user))
       "permissions" (doseq [entry entries]
-                      (update-handler entry)))))
+                      (entry-handler entry process-permissions)))))
 
 (defn user-uninstalled
   "Placeholder for uninstall function"
   [facebook-id] 
-  facebook-id)
+  facebook-id) ; TODO make it modular so users can do whatever they needed 
 
-(defn uninstall-handler [signed-request]
+(defn uninstall-handler [signed-request f]
   (when-let [parsed-request (parse-signed-request signed-request)]
-    (do
-      (user-uninstalled (parsed-request "user_id")))))
+    (f (parsed-request "user_id"))))
 
 (defroutes facebook-routes
   (GET "/realtime-updates" req
@@ -87,4 +129,4 @@
   (POST "/realtime-updates" req
         (str (realtime-updates-handler req)))
   (POST "/uninstall" [signed_request]
-        (str (uninstall-handler signed_request))))
+        (str (uninstall-handler signed_request user-uninstalled))))

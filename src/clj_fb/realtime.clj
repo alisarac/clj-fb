@@ -103,7 +103,7 @@
   (api/get-graph-info (:id entry) f))
 
 
-(defn realtime-updates-handler [{:keys [params body error]}]
+(comment defn realtime-updates-handler [{:keys [params body error]}]
   (let [object (:object params)
         entries (:entry params)]
     (condp = object
@@ -114,6 +114,17 @@
       "permissions" (doseq [entry entries]
                       (entry-handler entry process-permissions)))))
 
+(defn wrap-processors [req]
+  (assoc req :processors {:payments process-payment
+                          :user process-user
+                          :permissions process-permissions}))
+
+(defn realtime-updates-handler [{:keys [params body error processors]}]
+  (let [object (:object params)
+        entries (:entry params)]
+    (doseq [entry entries]
+      (entry-handler entry (get processors (key object) identity)))))
+
 (defn user-uninstalled
   "Placeholder for uninstall function"
   [facebook-id] 
@@ -123,10 +134,12 @@
   (when-let [parsed-request (parse-signed-request signed-request)]
     (f (parsed-request "user_id"))))
 
+
+;; Routes should be created by the client, not here
 (defroutes facebook-routes
   (GET "/realtime-updates" req
        ((text-response hub-challenge-handler) req))
   (POST "/realtime-updates" req
-        (str (realtime-updates-handler req)))
+        (str (realtime-updates-handler (wrap-processors req))))
   (POST "/uninstall" [signed_request]
         (str (uninstall-handler signed_request user-uninstalled))))

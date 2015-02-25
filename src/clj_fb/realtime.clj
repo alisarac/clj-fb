@@ -13,7 +13,7 @@
 
 (def secret (env :secret)) ; obtained from facebook developer console
 
-(defn hub-challenge-handler [req]
+(defn hub-challenge [req]
   (let [params (:params req)
         hub-mode (get params "hub.mode" nil)
         hub-challenge (get params "hub.challenge" nil)
@@ -23,11 +23,13 @@
       (r/response hub-challenge)
       (r/response nil))))
 
-(defn text-response [handler]
+(defn wrap-text-response [handler]
   (fn [request]
     (let [response (handler request)]
       (r/header response "Content-Type" "text/plain; charset=utf-8"))))
 
+(defn hub-challenge-handler [req]
+  (wrap-text-response hub-challenge-handler))
 
 ;; Implementation detail about verifying signed request
 (defn secret-key-inst [key mac]
@@ -61,85 +63,26 @@
     (when (= (bytes->hex-string sig) (bytes->hex-string signed-payload))
       (json/parse-string (String. (.decode base64 (.getBytes payload "UTF-8")))))))
 
-(defn process-payment [{:keys [params status headers body error]}]
-  (let [body (json/parse-string body)
-        payment-id (body "id")
-        request-id (body "request_id")
-        user-id (get-in body ["user" "id"])
-        application-id (get-in body ["application" "id"])
-        application-namespace (get-in body ["application" "namespace"])
-        application-name (get-in body ["application" "name"])
-        actions (body "actions")
-        refundable-amount (body "refundable_amount")
-        items (body "items")
-        test? (body "test")
-        exchange-rate (body "payout_foreign_exchange_rate")
-        completed? (some #(= "completed" (% "status")) actions)]
-    {:body body
-     :payment-id payment-id
-     :request-id request-id
-     :user-id user-id
-     :application-id application-id
-     :application-namespace application-namespace
-     :application-name application-name
-     :actions actions
-     :refundable-amount refundable-amount
-     :items items
-     :test? test?
-     :exchange-rate exchange-rate
-     :completed? completed?})) ; TODO make it modular so users can do whatever they needed 
-
-(defn process-user [{:keys [params status headers body error]}]
-  (let [body (json/parse-string body)]
-    {:body body})) ; TODO make it modular so users can do whatever they needed 
-
-(defn process-permissions [{:keys [params status headers body error]}]
-  (let [body (json/parse-string body)]
-    {:body body})) ; TODO make it modular so users can do whatever they needed 
-
 (defn entry-handler
   "Gets details of update from id of entry"
   [entry f] 
   (api/get-graph-info (:id entry) f))
 
-
-(comment defn realtime-updates-handler [{:keys [params body error]}]
-  (let [object (:object params)
-        entries (:entry params)]
-    (condp = object
-      "payments" (doseq [entry entries]
-                   (entry-handler entry process-payment))
-      "user" (doseq [entry entries]
-               (entry-handler entry process-user))
-      "permissions" (doseq [entry entries]
-                      (entry-handler entry process-permissions)))))
-
-(defn wrap-processors [req]
-  (assoc req :processors {:payments process-payment
-                          :user process-user
-                          :permissions process-permissions}))
-
-(defn realtime-updates-handler [{:keys [params body error processors]}]
+(defn realtime-updates-handler 
+  "Main realtime updates handler function to delegate 
+  updates to user defined functions in processors"
+  [{:keys [params body error processors]}]
   (let [object (:object params)
         entries (:entry params)]
     (doseq [entry entries]
       (entry-handler entry (get processors (key object) identity)))))
 
-(defn user-uninstalled
-  "Placeholder for uninstall function"
-  [facebook-id] 
-  facebook-id) ; TODO make it modular so users can do whatever they needed 
-
-(defn uninstall-handler [signed-request f]
+(defn uninstall-handler 
+  "Main uninstall handler function to delegate 
+  uninstalled user information to user created function"
+  [signed-request f]
   (when-let [parsed-request (parse-signed-request signed-request)]
     (f (parsed-request "user_id"))))
 
 
-;; Routes should be created by the client, not here
-(defroutes facebook-routes
-  (GET "/realtime-updates" req
-       ((text-response hub-challenge-handler) req))
-  (POST "/realtime-updates" req
-        (str (realtime-updates-handler (wrap-processors req))))
-  (POST "/uninstall" [signed_request]
-        (str (uninstall-handler signed_request user-uninstalled))))
+
